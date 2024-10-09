@@ -1,118 +1,113 @@
-namespace StockSharp.Algo.Indicators;
-
-using System.Drawing;
-
-using Ecng.Drawing;
-
-/// <summary>
-/// Indicator measures.
-/// </summary>
-public enum IndicatorMeasures
+namespace StockSharp.Algo.Indicators
 {
-	/// <summary>
-	/// Price.
-	/// </summary>
-	Price,
+    [Display(
+        ResourceType = typeof(LocalizedStrings),
+        Name = nameof(LocalizedStrings.DMIKey),
+        Description = nameof(LocalizedStrings.WellesWilderDirectionalMovementIndexKey))]
+    [Doc("topics/api/indicators/list_of_indicators/dmi.html")]
+    public class DirectionalIndex : BaseComplexIndicator
+    {
+        private class DxValue : ComplexIndicatorValue
+        {
+            private decimal _value;
 
-	/// <summary>
-	/// 0 till 100.
-	/// </summary>
-	Percent,
+            public DxValue(IComplexIndicator indicator, DateTimeOffset time)
+                : base(indicator, time)
+            {
+            }
 
-	/// <summary>
-	/// -1 till +1.
-	/// </summary>
-	MinusOnePlusOne,
+            public override IIndicatorValue SetValue<T>(IIndicator indicator, T value)
+            {
+                IsEmpty = false;
+                _value = Convert.ToDecimal(value);
+                return new DecimalIndicatorValue(indicator, _value, Time) { IsFinal = IsFinal };
+            }
 
-	/// <summary>
-	/// Volume.
-	/// </summary>
-	Volume,
-}
+            public override T GetValue<T>(Level1Fields? field = null)
+            {
+                return (T)Convert.ChangeType(_value, typeof(T));
+            }
+        }
 
-/// <summary>
-/// The interface describing indicator.
-/// </summary>
-public interface IIndicator : IPersistable, ICloneable<IIndicator>
-{
-	/// <summary>
-	/// Unique ID.
-	/// </summary>
-	Guid Id { get; }
+        public DirectionalIndex()
+        {
+            Plus = new DiPlus();
+            Minus = new DiMinus();
+            AddInner(Plus);
+            AddInner(Minus);
+        }
 
-	/// <summary>
-	/// Indicator name.
-	/// </summary>
-	string Name { get; set; }
+        public override IndicatorMeasures Measure => IndicatorMeasures.Percent;
 
-	/// <summary>
-	/// Whether the indicator is set.
-	/// </summary>
-	bool IsFormed { get; }
+        private int _length;
 
-	/// <summary>
-	/// Number of values that need to be processed in order for the indicator to initialize (be <see cref="IsFormed"/> equals <see langword="true"/>).
-	/// <see langword="null"/> if undefined.
-	/// </summary>
-	int NumValuesToInitialize { get; }
+        public int Length
+        {
+            get => _length;
+            set
+            {
+                if (_length != value)
+                {
+                    _length = value;
+                    Plus.Length = value;
+                    Minus.Length = value;
+                    Reset();
+                }
+            }
+        }
 
-	/// <summary>
-	/// The container storing indicator data.
-	/// </summary>
-	IIndicatorContainer Container { get; }
+        [TypeConverter(typeof(ExpandableObjectConverter))]
+        [Display(
+            ResourceType = typeof(LocalizedStrings),
+            Name = nameof(LocalizedStrings.DiPlusKey),
+            Description = nameof(LocalizedStrings.DiPlusLineKey),
+            GroupName = nameof(LocalizedStrings.GeneralKey))]
+        public DiPlus Plus { get; }
 
-	/// <summary>
-	/// Input values type.
-	/// </summary>
-	Type InputType { get; }
+        [TypeConverter(typeof(ExpandableObjectConverter))]
+        [Display(
+            ResourceType = typeof(LocalizedStrings),
+            Name = nameof(LocalizedStrings.DiMinusKey),
+            Description = nameof(LocalizedStrings.DiMinusLineKey),
+            GroupName = nameof(LocalizedStrings.GeneralKey))]
+        public DiMinus Minus { get; }
 
-	/// <summary>
-	/// Result values type.
-	/// </summary>
-	Type ResultType { get; }
+        protected override IIndicatorValue OnProcess(IIndicatorValue input)
+        {
+            var value = new DxValue(this, input.Time) { IsFinal = input.IsFinal };
 
-	/// <summary>
-	/// The indicator change event (for example, a new value is added).
-	/// </summary>
-	event Action<IIndicatorValue, IIndicatorValue> Changed;
+            var plusValue = Plus.Process(input);
+            var minusValue = Minus.Process(input);
 
-	/// <summary>
-	/// The event of resetting the indicator status to initial. The event is called each time when initial settings are changed (for example, the length of period).
-	/// </summary>
-	event Action Reseted;
+            value.Add(Plus, plusValue);
+            value.Add(Minus, minusValue);
 
-	/// <summary>
-	/// To handle the input value.
-	/// </summary>
-	/// <param name="input">The input value.</param>
-	/// <returns>The new value of the indicator.</returns>
-	IIndicatorValue Process(IIndicatorValue input);
+            if (plusValue.IsEmpty || minusValue.IsEmpty)
+                return value;
 
-	/// <summary>
-	/// To reset the indicator status to initial. The method is called each time when initial settings are changed (for example, the length of period).
-	/// </summary>
-	void Reset();
+            var plus = plusValue.ToDecimal();
+            var minus = minusValue.ToDecimal();
 
-	/// <summary>
-	/// <see cref="IndicatorMeasures"/>.
-	/// </summary>
-	IndicatorMeasures Measure { get; }
+            var diSum = plus + minus;
+            var diDiff = Math.Abs(plus - minus);
 
-	/// <summary>
-	/// Convert to indicator value.
-	/// </summary>
-	/// <param name="time"><see cref="IIndicatorValue.Time"/></param>
-	/// <param name="values"><see cref="IIndicatorValue.ToValues"/></param>
-	/// <returns><see cref="IIndicatorValue"/></returns>
-	IIndicatorValue CreateValue(DateTimeOffset time, object[] values);
+            value.Add(this, value.SetValue(this, diSum != 0m ? (100 * diDiff / diSum) : 0m));
 
-	/// <summary>
-	/// Chart indicator draw style.
-	/// </summary>
-	DrawStyles Style { get; }
+            return value;
+        }
 
-	/// <summary>
-	/// Indicator color. If <see langword="null"/> then the color will be automatically selected.
-	/// </summary>
-	Color? Color { get; }
+        public override void Load(SettingsStorage storage)
+        {
+            base.Load(storage);
+            Length = storage.GetValue<int>(nameof(Length));
+        }
+
+        public override void Save(SettingsStorage storage)
+        {
+            base.Save(storage);
+            storage.SetValue(nameof(Length), Length);
+        }
+
+        public override string ToString() => $"{base.ToString()} {Length}";
+    }
 }
