@@ -1,51 +1,71 @@
 ﻿namespace StockSharp.Algo.Analytics
 {
-	/// <summary>
-	/// The analytic script, shows biggest candle (by volume and by length) for specified securities.
-	/// </summary>
-	public class BiggestCandleScript : IAnalyticsScript
-	{
-		Task IAnalyticsScript.Run(ILogReceiver logs, IAnalyticsPanel panel, SecurityId[] securities, DateTime from, DateTime to, IStorageRegistry storage, IMarketDataDrive drive, StorageFormats format, TimeSpan timeFrame, CancellationToken cancellationToken)
-		{
-			if (securities.Length == 0)
-			{
-				logs.AddWarningLog("No instruments.");
-				return Task.CompletedTask;
-			}
+    public class BiggestCandleScript : IAnalyticsScript
+    {
+        public async Task Run(ILogReceiver logs, IAnalyticsPanel panel, SecurityId[] securities, DateTime from, DateTime to, IStorageRegistry storage, IMarketDataDrive drive, StorageFormats format, TimeSpan timeFrame, CancellationToken cancellationToken)
+        {
+            if (securities.Length == 0)
+            {
+                logs.AddWarningLog("No instruments.");
+                return;
+            }
 
-			var priceChart = panel.CreateChart<DateTimeOffset, decimal, decimal>();
-			var volChart = panel.CreateChart<DateTimeOffset, decimal, decimal>();
+            var priceChart = panel.CreateChart<DateTimeOffset, decimal, decimal>();
+            var volChart = panel.CreateChart<DateTimeOffset, decimal, decimal>();
 
-			var bigPriceCandles = new List<CandleMessage>();
-			var bigVolCandles = new List<CandleMessage>();
+            var bigPriceCandles = new List<CandleMessage>();
+            var bigVolCandles = new List<CandleMessage>();
 
-			foreach (var security in securities)
-			{
-				// stop calculation if user cancel script execution
-				if (cancellationToken.IsCancellationRequested)
-					break;
+            var tasks = securities.Select(async security =>
+            {
+                if (cancellationToken.IsCancellationRequested)
+                    return;
 
-				// get candle storage
-				var candleStorage = storage.GetTimeFrameCandleMessageStorage(security, timeFrame, drive, format);
+                // Get candle storage asynchronously
+                var candleStorage = storage.GetTimeFrameCandleMessageStorage(security, timeFrame, drive, format);
+                var allCandles = (await Task.Run(() => candleStorage.Load(from, to).ToArray())).Where(c => c != null).ToArray();
 
-				var allCandles = candleStorage.Load(from, to).ToArray();
+                if (allCandles.Length == 0)
+                    return;
 
-				// first orders by volume desc will be our biggest candle
-				var bigPriceCandle = allCandles.OrderByDescending(c => c.GetLength()).FirstOrDefault();
-				var bigVolCandle = allCandles.OrderByDescending(c => c.TotalVolume).FirstOrDefault();
+                // Find the biggest price and volume candles
+                CandleMessage bigPriceCandle = null;
+                CandleMessage bigVolCandle = null;
+                foreach (var candle in allCandles)
+                {
+                    if (bigPriceCandle == null || candle.GetLength() > bigPriceCandle.GetLength())
+                        bigPriceCandle = candle;
 
-				if (bigPriceCandle != null)
-					bigPriceCandles.Add(bigPriceCandle);
+                    if (bigVolCandle == null || candle.TotalVolume > bigVolCandle.TotalVolume)
+                        bigVolCandle = candle;
+                }
 
-				if (bigVolCandle != null)
-					bigVolCandles.Add(bigVolCandle);
-			}
+                if (bigPriceCandle != null)
+                    bigPriceCandles.Add(bigPriceCandle);
 
-			// draw series on chart
-			priceChart.Append("prices", bigPriceCandles.Select(c => c.OpenTime), bigPriceCandles.Select(c => c.GetMiddlePrice(null)), bigPriceCandles.Select(c => c.GetLength()));
-			volChart.Append("prices", bigVolCandles.Select(c => c.OpenTime), bigPriceCandles.Select(c => c.GetMiddlePrice(null)), bigVolCandles.Select(c => c.TotalVolume));
+                if (bigVolCandle != null)
+                    bigVolCandles.Add(bigVolCandle);
+            }).ToList();
 
-			return Task.CompletedTask;
-		}
-	}
+            // Run all tasks in parallel
+            await Task.WhenAll(tasks);
+
+            // Draw series on chart
+            if (bigPriceCandles.Any())
+            {
+                var priceTimes = bigPriceCandles.Select(c => c.OpenTime).ToArray();
+                var middlePrices = bigPriceCandles.Select(c => c.GetMiddlePrice(null)).ToArray();
+                var priceLengths = bigPriceCandles.Select(c => c.GetLength()).ToArray();
+                priceChart.Append("prices", priceTimes, middlePrices, priceLengths);
+            }
+
+            if (bigVolCandles.Any())
+            {
+                var volTimes = bigVolCandles.Select(c => c.OpenTime).ToArray();
+                var volMiddlePrices = bigVolCandles.Select(c => c.GetMiddlePrice(null)).ToArray();
+                var totalVolumes = bigVolCandles.Select(c => c.TotalVolume).ToArray();
+                volChart.Append("volumes", volTimes, volMiddlePrices, totalVolumes);
+            }
+        }
+    }
 }
