@@ -66,6 +66,14 @@
                 var totalVolumes = bigVolCandles.Select(c => c.TotalVolume).ToArray();
                 volChart.Append("volumes", volTimes, volMiddlePrices, totalVolumes);
             }
+            if(bigPriceCandles.Any())
+            {
+                logs.AddInfoLog("Biggest price candles:");
+                foreach (var candle in bigPriceCandles)
+                    logs.AddInfoLog(candle.ToString());
+            }
+            else
+                logs.AddInfoLog("No price candles found.");
         }
     }
 }
